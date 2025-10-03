@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  db-backuper:
+    build: .
+    container_name: db-backuper
+    restart: unless-stopped
+    volumes:
+      - ./appsettings.json:/root/appsettings.json:ro
+    environment:
+      # Override database settings if needed
+      - PGPASSWORD=${PGPASSWORD:-}
+    depends_on:
+      - postgres
+    networks:
+      - backup-network
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres-backup-test
+    environment:
+      POSTGRES_DB: mydb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - backup-network
+
+volumes:
+  postgres_data:
+
+networks:
+  backup-network:
+    driver: bridge
