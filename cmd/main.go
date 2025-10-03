@@ -11,6 +11,7 @@ import (
 	"db-backuper/internal/backup"
 	"db-backuper/internal/config"
 	"db-backuper/internal/s3"
+	"db-backuper/internal/storage"
 
 	"github.com/robfig/cron/v3"
 	"github.com/sirupsen/logrus"
@@ -35,19 +36,32 @@ func main() {
 
 	// Initialize backup components
 	postgresBackup := backup.NewPostgresBackup(&cfg.Database, logger)
-	s3Manager, err := s3.NewS3Manager(&cfg.AWS, logger)
-	if err != nil {
-		logger.Fatalf("Failed to initialize S3 manager: %v", err)
+
+	var storageManager interface{}
+	if cfg.IsLocalStorage() {
+		localStorage, err := storage.NewLocalStorage(&cfg.Local, logger)
+		if err != nil {
+			logger.Fatalf("Failed to initialize local storage: %v", err)
+		}
+		storageManager = localStorage
+		logger.Info("Using local storage for backups")
+	} else if cfg.IsAWSStorage() {
+		s3Manager, err := s3.NewS3Manager(&cfg.AWS, logger)
+		if err != nil {
+			logger.Fatalf("Failed to initialize S3 manager: %v", err)
+		}
+		storageManager = s3Manager
+		logger.Info("Using AWS S3 for backups")
 	}
 
 	// Test connections
-	if err := testConnections(postgresBackup, s3Manager, logger); err != nil {
+	if err := testConnections(postgresBackup, storageManager, logger); err != nil {
 		logger.Fatalf("Connection test failed: %v", err)
 	}
 
 	if *runOnce {
 		// Run backup once and exit
-		if err := performBackup(postgresBackup, s3Manager, &cfg.Backup, logger); err != nil {
+		if err := performBackup(postgresBackup, storageManager, &cfg.Backup, logger); err != nil {
 			logger.Fatalf("Backup failed: %v", err)
 		}
 		logger.Info("Backup completed successfully")
@@ -57,7 +71,7 @@ func main() {
 	// Setup scheduled backups
 	c := cron.New()
 	_, err = c.AddFunc(cfg.Backup.Schedule, func() {
-		if err := performBackup(postgresBackup, s3Manager, &cfg.Backup, logger); err != nil {
+		if err := performBackup(postgresBackup, storageManager, &cfg.Backup, logger); err != nil {
 			logger.Errorf("Scheduled backup failed: %v", err)
 		}
 	})
@@ -100,13 +114,22 @@ func setupLogger(loggingConfig config.LoggingConfig) *logrus.Logger {
 	return logger
 }
 
-// testConnections tests database and S3 connections
-func testConnections(postgresBackup *backup.PostgresBackup, s3Manager *s3.S3Manager, logger *logrus.Logger) error {
+// testConnections tests database and storage connections
+func testConnections(postgresBackup *backup.PostgresBackup, storageManager interface{}, logger *logrus.Logger) error {
 	logger.Info("Testing connections...")
 
-	// Test S3 connection
-	if err := s3Manager.TestConnection(); err != nil {
-		return fmt.Errorf("S3 connection test failed: %w", err)
+	// Test storage connection
+	switch sm := storageManager.(type) {
+	case *s3.S3Manager:
+		if err := sm.TestConnection(); err != nil {
+			return fmt.Errorf("S3 connection test failed: %w", err)
+		}
+	case *storage.LocalStorage:
+		if err := sm.TestConnection(); err != nil {
+			return fmt.Errorf("local storage connection test failed: %w", err)
+		}
+	default:
+		return fmt.Errorf("unknown storage manager type")
 	}
 
 	// Test database connection by attempting to create a backup
@@ -126,7 +149,7 @@ func testConnections(postgresBackup *backup.PostgresBackup, s3Manager *s3.S3Mana
 }
 
 // performBackup performs a complete backup operation
-func performBackup(postgresBackup *backup.PostgresBackup, s3Manager *s3.S3Manager, backupConfig *config.BackupConfig, logger *logrus.Logger) error {
+func performBackup(postgresBackup *backup.PostgresBackup, storageManager interface{}, backupConfig *config.BackupConfig, logger *logrus.Logger) error {
 	startTime := time.Now()
 	logger.Info("Starting backup operation")
 
@@ -136,14 +159,31 @@ func performBackup(postgresBackup *backup.PostgresBackup, s3Manager *s3.S3Manage
 		return fmt.Errorf("failed to create database backup: %w", err)
 	}
 
-	// Upload to S3
-	s3Key, err := s3Manager.UploadBackup(backupPath, backupConfig.BackupPrefix)
-	if err != nil {
-		// Cleanup local backup file on upload failure
-		if cleanupErr := postgresBackup.CleanupBackup(backupPath); cleanupErr != nil {
-			logger.Warnf("Failed to cleanup backup file after upload failure: %v", cleanupErr)
+	// Save backup to storage
+	var finalPath string
+	switch sm := storageManager.(type) {
+	case *s3.S3Manager:
+		s3Key, err := sm.UploadBackup(backupPath, backupConfig.BackupPrefix)
+		if err != nil {
+			// Cleanup local backup file on upload failure
+			if cleanupErr := postgresBackup.CleanupBackup(backupPath); cleanupErr != nil {
+				logger.Warnf("Failed to cleanup backup file after upload failure: %v", cleanupErr)
+			}
+			return fmt.Errorf("failed to upload backup to S3: %w", err)
 		}
-		return fmt.Errorf("failed to upload backup to S3: %w", err)
+		finalPath = s3Key
+	case *storage.LocalStorage:
+		localPath, err := sm.SaveBackup(backupPath, backupConfig.BackupPrefix)
+		if err != nil {
+			// Cleanup local backup file on save failure
+			if cleanupErr := postgresBackup.CleanupBackup(backupPath); cleanupErr != nil {
+				logger.Warnf("Failed to cleanup backup file after save failure: %v", cleanupErr)
+			}
+			return fmt.Errorf("failed to save backup to local storage: %w", err)
+		}
+		finalPath = localPath
+	default:
+		return fmt.Errorf("unknown storage manager type")
 	}
 
 	// Cleanup local backup file
@@ -152,11 +192,18 @@ func performBackup(postgresBackup *backup.PostgresBackup, s3Manager *s3.S3Manage
 	}
 
 	// Cleanup old backups
-	if err := s3Manager.DeleteOldBackups(backupConfig.BackupPrefix, backupConfig.RetentionDays); err != nil {
-		logger.Warnf("Failed to cleanup old backups: %v", err)
+	switch sm := storageManager.(type) {
+	case *s3.S3Manager:
+		if err := sm.DeleteOldBackups(backupConfig.BackupPrefix, backupConfig.RetentionDays); err != nil {
+			logger.Warnf("Failed to cleanup old S3 backups: %v", err)
+		}
+	case *storage.LocalStorage:
+		if err := sm.DeleteOldBackups(backupConfig.BackupPrefix, backupConfig.RetentionDays); err != nil {
+			logger.Warnf("Failed to cleanup old local backups: %v", err)
+		}
 	}
 
 	duration := time.Since(startTime)
-	logger.Infof("Backup operation completed successfully in %v. S3 key: %s", duration, s3Key)
+	logger.Infof("Backup operation completed successfully in %v. Final path: %s", duration, finalPath)
 	return nil
 }

@@ -10,6 +10,7 @@ import (
 type Config struct {
 	Database DatabaseConfig `json:"database"`
 	AWS      AWSConfig      `json:"aws"`
+	Local    LocalConfig    `json:"local"`
 	Backup   BackupConfig   `json:"backup"`
 	Logging  LoggingConfig  `json:"logging"`
 }
@@ -30,6 +31,11 @@ type AWSConfig struct {
 	Bucket          string `json:"bucket"`
 	AccessKeyID     string `json:"access_key_id"`
 	SecretAccessKey string `json:"secret_access_key"`
+}
+
+// LocalConfig holds local storage configuration
+type LocalConfig struct {
+	Path string `json:"path"`
 }
 
 // BackupConfig holds backup-specific configuration
@@ -65,5 +71,37 @@ func LoadConfig(configPath string) (*Config, error) {
 		return nil, fmt.Errorf("failed to decode config: %w", err)
 	}
 
+	// Validate configuration
+	if err := config.Validate(); err != nil {
+		return nil, fmt.Errorf("configuration validation failed: %w", err)
+	}
+
 	return &config, nil
+}
+
+// Validate checks if the configuration is valid
+func (c *Config) Validate() error {
+	// Check if either local path or AWS S3 is configured
+	hasLocal := c.Local.Path != ""
+	hasAWS := c.AWS.Bucket != "" && c.AWS.Region != "" && c.AWS.AccessKeyID != "" && c.AWS.SecretAccessKey != ""
+
+	if !hasLocal && !hasAWS {
+		return fmt.Errorf("either local storage path or AWS S3 configuration is required")
+	}
+
+	if hasLocal && hasAWS {
+		return fmt.Errorf("both local storage and AWS S3 are configured, please choose one")
+	}
+
+	return nil
+}
+
+// IsLocalStorage returns true if local storage is configured
+func (c *Config) IsLocalStorage() bool {
+	return c.Local.Path != ""
+}
+
+// IsAWSStorage returns true if AWS S3 is configured
+func (c *Config) IsAWSStorage() bool {
+	return c.AWS.Bucket != "" && c.AWS.Region != "" && c.AWS.AccessKeyID != "" && c.AWS.SecretAccessKey != ""
 }

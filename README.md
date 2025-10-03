@@ -1,11 +1,11 @@
 # PostgreSQL Database Backup Service
 
-A Go-based service that automatically backs up PostgreSQL databases to AWS S3 with configurable retention policies.
+A Go-based service that automatically backs up PostgreSQL databases to local storage or AWS S3 with configurable retention policies.
 
 ## Features
 
 - **Automatic PostgreSQL backups** using `pg_dump`
-- **AWS S3 integration** for cloud storage
+- **Flexible storage options**: Local filesystem or AWS S3
 - **Configurable retention policy** (default: 7 days)
 - **Scheduled backups** using cron expressions
 - **One-time backup** option
@@ -15,8 +15,35 @@ A Go-based service that automatically backs up PostgreSQL databases to AWS S3 wi
 
 ## Configuration
 
-All configuration is managed through `appsettings.json`:
+All configuration is managed through `appsettings.json`. You must configure either local storage OR AWS S3 (not both):
 
+**Local Storage Configuration:**
+```json
+{
+  "database": {
+    "host": "localhost",
+    "port": 5432,
+    "username": "postgres",
+    "password": "password",
+    "database": "mydb",
+    "ssl_mode": "disable"
+  },
+  "local": {
+    "path": "/backups"
+  },
+  "backup": {
+    "retention_days": 7,
+    "schedule": "0 2 * * *",
+    "backup_prefix": "postgres-backup"
+  },
+  "logging": {
+    "level": "info",
+    "format": "json"
+  }
+}
+```
+
+**AWS S3 Configuration:**
 ```json
 {
   "database": {
@@ -55,6 +82,9 @@ All configuration is managed through `appsettings.json`:
 - `database`: Database name to backup
 - `ssl_mode`: SSL mode (disable, require, verify-full, etc.)
 
+#### Local Storage Configuration
+- `path`: Local directory path for storing backups
+
 #### AWS Configuration
 - `region`: AWS region for S3 bucket
 - `bucket`: S3 bucket name for storing backups
@@ -64,7 +94,7 @@ All configuration is managed through `appsettings.json`:
 #### Backup Configuration
 - `retention_days`: Number of days to keep backups (default: 7)
 - `schedule`: Cron expression for scheduled backups (default: daily at 2 AM)
-- `backup_prefix`: Prefix for S3 object keys
+- `backup_prefix`: Prefix for backup files (used for both local and S3 storage)
 
 #### Logging Configuration
 - `level`: Log level (debug, info, warn, error)
@@ -92,6 +122,13 @@ go run ./cmd/main.go
 
 #### Custom Configuration
 ```bash
+# For local storage
+go run ./cmd/main.go -config appsettings.local.json
+
+# For AWS S3 storage
+go run ./cmd/main.go -config appsettings.aws.json
+
+# Custom configuration file
 go run ./cmd/main.go -config /path/to/custom-config.json
 ```
 
@@ -112,6 +149,24 @@ The docker-compose file includes a test PostgreSQL instance for development.
 
 ## Backup File Organization
 
+### Local Storage
+Backups are organized locally with the following structure:
+```
+/backup-path/
+└── backup-prefix/
+    └── YYYY-MM-DD/
+        └── database-name_YYYY-MM-DD_HH-MM-SS.sql
+```
+
+Example:
+```
+/backups/
+└── postgres-backup/
+    └── 2024-01-15/
+        └── mydb_2024-01-15_14-30-25.sql
+```
+
+### AWS S3 Storage
 Backups are organized in S3 with the following structure:
 ```
 s3://bucket-name/
