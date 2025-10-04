@@ -17,7 +17,75 @@ A Go-based service that automatically backs up multiple PostgreSQL databases to 
 
 ## Configuration
 
-All configuration is managed through `appsettings.json`. You must configure either local storage OR AWS S3 (not both):
+All configuration is managed through `appsettings.json`. You must configure either local storage OR AWS S3 (not both).
+
+### Environment Variable Overrides
+
+The application supports environment variable overrides for all configuration values. Environment variables take precedence over the configuration file values. This is particularly useful for deployment scenarios where you want to keep sensitive information out of configuration files.
+
+#### Database Configuration
+
+For the first database, you can use:
+- `DB_HOST` - Database host
+- `DB_PORT` - Database port
+- `DB_USERNAME` - Database username
+- `DB_PASSWORD` - Database password
+- `DB_DATABASE` - Database name
+- `DB_SSL_MODE` - SSL mode (disable, require, etc.)
+
+For multiple databases, use indexed environment variables:
+- `DB_0_HOST`, `DB_0_PORT`, `DB_0_USERNAME`, etc. (for first database)
+- `DB_1_HOST`, `DB_1_PORT`, `DB_1_USERNAME`, etc. (for second database)
+- And so on...
+
+#### Storage Configuration
+
+**Local Storage:**
+- `LOCAL_BACKUP_PATH` - Local backup directory path
+
+**AWS S3:**
+- `AWS_REGION` - AWS region
+- `AWS_BUCKET` - S3 bucket name
+- `AWS_ACCESS_KEY_ID` - AWS access key ID
+- `AWS_SECRET_ACCESS_KEY` - AWS secret access key
+
+#### Backup Configuration
+
+- `BACKUP_RETENTION_DAYS` - Number of days to retain backups
+- `BACKUP_SCHEDULE` - Cron expression for backup schedule
+- `BACKUP_PREFIX` - Prefix for backup files
+
+#### Import Configuration
+
+- `IMPORT_DB_HOST` - Target database host for imports
+- `IMPORT_DB_PORT` - Target database port for imports
+- `IMPORT_DB_USERNAME` - Target database username for imports
+- `IMPORT_DB_PASSWORD` - Target database password for imports
+- `IMPORT_DB_DATABASE` - Target database name for imports
+- `IMPORT_DB_SSL_MODE` - Target database SSL mode for imports
+- `IMPORT_BACKUP_PATH` - Path to backup file to import
+- `IMPORT_DROP_EXISTING` - Whether to drop existing database before import (true/false)
+
+#### Logging Configuration
+
+- `LOG_LEVEL` - Log level (debug, info, warn, error)
+- `LOG_FORMAT` - Log format (text, json)
+
+#### Example Usage
+
+```bash
+# Override database connection and backup settings
+export DB_HOST=production-db.example.com
+export DB_USERNAME=backup_user
+export DB_PASSWORD=secure_password
+export LOCAL_BACKUP_PATH=/mnt/backups
+export BACKUP_RETENTION_DAYS=30
+
+# Run the backup service
+go run ./cmd/main.go -config appsettings.json
+```
+
+### Configuration File Structure
 
 **Local Storage Configuration:**
 ```json

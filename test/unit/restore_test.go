@@ -25,7 +25,7 @@ func TestRestoreConfigurationValidation(t *testing.T) {
 		{
 			name: "Valid configuration",
 			config: &config.ImportConfig{
-				TargetDatabase: config.DatabaseConfig{
+				TargetDatabase: config.ImportDatabaseConfig{
 					Host:     "localhost",
 					Port:     5432,
 					Username: "testuser",
@@ -41,7 +41,7 @@ func TestRestoreConfigurationValidation(t *testing.T) {
 		{
 			name: "Missing target database host",
 			config: &config.ImportConfig{
-				TargetDatabase: config.DatabaseConfig{
+				TargetDatabase: config.ImportDatabaseConfig{
 					Port:     5432,
 					Username: "testuser",
 					Password: "testpass",
@@ -57,7 +57,7 @@ func TestRestoreConfigurationValidation(t *testing.T) {
 		{
 			name: "Missing backup path",
 			config: &config.ImportConfig{
-				TargetDatabase: config.DatabaseConfig{
+				TargetDatabase: config.ImportDatabaseConfig{
 					Host:     "localhost",
 					Port:     5432,
 					Username: "testuser",
@@ -73,7 +73,7 @@ func TestRestoreConfigurationValidation(t *testing.T) {
 		{
 			name: "Missing target database name",
 			config: &config.ImportConfig{
-				TargetDatabase: config.DatabaseConfig{
+				TargetDatabase: config.ImportDatabaseConfig{
 					Host:     "localhost",
 					Port:     5432,
 					Username: "testuser",
@@ -131,7 +131,7 @@ func TestRestoreBackupFileValidation(t *testing.T) {
 
 	// Test with existing backup file
 	importConfig := &config.ImportConfig{
-		TargetDatabase: config.DatabaseConfig{
+		TargetDatabase: config.ImportDatabaseConfig{
 			Host:     "localhost",
 			Port:     5432,
 			Username: "testuser",
@@ -218,7 +218,7 @@ func TestRestoreInstanceCreation(t *testing.T) {
 	logger.SetLevel(logrus.DebugLevel)
 
 	importConfig := &config.ImportConfig{
-		TargetDatabase: config.DatabaseConfig{
+		TargetDatabase: config.ImportDatabaseConfig{
 			Host:     "localhost",
 			Port:     5432,
 			Username: "testuser",

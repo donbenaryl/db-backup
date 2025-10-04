@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+
+	"github.com/caarlos0/env/v11"
 )
 
 // Config holds all configuration for the backup application
@@ -18,49 +20,65 @@ type Config struct {
 
 // DatabaseConfig holds PostgreSQL connection configuration
 type DatabaseConfig struct {
-	Host     string `json:"host"`
-	Port     int    `json:"port"`
-	Username string `json:"username"`
-	Password string `json:"password"`
-	Database string `json:"database"`
-	SSLMode  string `json:"ssl_mode"`
+	Host     string `json:"host" env:"DB_HOST"`
+	Port     int    `json:"port" env:"DB_PORT"`
+	Username string `json:"username" env:"DB_USERNAME"`
+	Password string `json:"password" env:"DB_PASSWORD"`
+	Database string `json:"database" env:"DB_DATABASE"`
+	SSLMode  string `json:"ssl_mode" env:"DB_SSL_MODE"`
 }
 
 // AWSConfig holds AWS S3 configuration
 type AWSConfig struct {
-	Region          string `json:"region"`
-	Bucket          string `json:"bucket"`
-	AccessKeyID     string `json:"access_key_id"`
-	SecretAccessKey string `json:"secret_access_key"`
+	Region          string `json:"region" env:"AWS_REGION"`
+	Bucket          string `json:"bucket" env:"AWS_BUCKET"`
+	AccessKeyID     string `json:"access_key_id" env:"AWS_ACCESS_KEY_ID"`
+	SecretAccessKey string `json:"secret_access_key" env:"AWS_SECRET_ACCESS_KEY"`
 }
 
 // LocalConfig holds local storage configuration
 type LocalConfig struct {
-	Path string `json:"path"`
+	Path string `json:"path" env:"LOCAL_BACKUP_PATH"`
 }
 
 // BackupConfig holds backup-specific configuration
 type BackupConfig struct {
-	RetentionDays int    `json:"retention_days"`
-	Schedule      string `json:"schedule"`
-	BackupPrefix  string `json:"backup_prefix"`
+	RetentionDays int    `json:"retention_days" env:"BACKUP_RETENTION_DAYS"`
+	Schedule      string `json:"schedule" env:"BACKUP_SCHEDULE"`
+	BackupPrefix  string `json:"backup_prefix" env:"BACKUP_PREFIX"`
 }
 
 // ImportConfig holds import/restore configuration
 type ImportConfig struct {
-	TargetDatabase DatabaseConfig `json:"target_database"`
-	BackupPath     string         `json:"backup_path"`
-	DropExisting   bool           `json:"drop_existing"`
+	TargetDatabase ImportDatabaseConfig `json:"target_database"`
+	BackupPath     string               `json:"backup_path" env:"IMPORT_BACKUP_PATH"`
+	DropExisting   bool                 `json:"drop_existing" env:"IMPORT_DROP_EXISTING"`
+}
+
+// ImportDatabaseConfig holds target database configuration for imports
+type ImportDatabaseConfig struct {
+	Host     string `json:"host" env:"IMPORT_DB_HOST"`
+	Port     int    `json:"port" env:"IMPORT_DB_PORT"`
+	Username string `json:"username" env:"IMPORT_DB_USERNAME"`
+	Password string `json:"password" env:"IMPORT_DB_PASSWORD"`
+	Database string `json:"database" env:"IMPORT_DB_DATABASE"`
+	SSLMode  string `json:"ssl_mode" env:"IMPORT_DB_SSL_MODE"`
 }
 
 // LoggingConfig holds logging configuration
 type LoggingConfig struct {
-	Level  string `json:"level"`
-	Format string `json:"format"`
+	Level  string `json:"level" env:"LOG_LEVEL"`
+	Format string `json:"format" env:"LOG_FORMAT"`
 }
 
 // GetConnectionString returns the PostgreSQL connection string
 func (d *DatabaseConfig) GetConnectionString() string {
+	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		d.Host, d.Port, d.Username, d.Password, d.Database, d.SSLMode)
+}
+
+// GetConnectionString returns the PostgreSQL connection string for import database
+func (d *ImportDatabaseConfig) GetConnectionString() string {
 	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 		d.Host, d.Port, d.Username, d.Password, d.Database, d.SSLMode)
 }
@@ -77,6 +95,11 @@ func LoadConfig(configPath string) (*Config, error) {
 	decoder := json.NewDecoder(file)
 	if err := decoder.Decode(&config); err != nil {
 		return nil, fmt.Errorf("failed to decode config: %w", err)
+	}
+
+	// Apply environment variable overrides
+	if err := applyEnvOverrides(&config); err != nil {
+		return nil, fmt.Errorf("failed to apply environment overrides: %w", err)
 	}
 
 	// Validate configuration
@@ -101,12 +124,127 @@ func LoadConfigForImport(configPath string) (*Config, error) {
 		return nil, fmt.Errorf("failed to decode config: %w", err)
 	}
 
+	// Apply environment variable overrides
+	if err := applyEnvOverrides(&config); err != nil {
+		return nil, fmt.Errorf("failed to apply environment overrides: %w", err)
+	}
+
 	// Validate configuration for import (allows empty databases)
 	if err := config.ValidateForImport(); err != nil {
 		return nil, fmt.Errorf("import configuration validation failed: %w", err)
 	}
 
 	return &config, nil
+}
+
+// applyEnvOverrides applies environment variable overrides to the configuration
+func applyEnvOverrides(config *Config) error {
+	// Handle database arrays - check for both DB_* and DB_INDEX_* environment variables
+	// This allows overriding specific database configurations
+	for i := range config.Databases {
+		// First try DB_* variables (for the first database)
+		if i == 0 {
+			if err := parseDatabaseEnv(&config.Databases[i], "DB_"); err != nil {
+				return fmt.Errorf("failed to parse database %d environment variables: %w", i, err)
+			}
+		}
+
+		// Then try DB_INDEX_* variables (for all databases)
+		dbPrefix := fmt.Sprintf("DB_%d_", i)
+		if err := parseDatabaseEnv(&config.Databases[i], dbPrefix); err != nil {
+			return fmt.Errorf("failed to parse database %d environment variables: %w", i, err)
+		}
+	}
+
+	// Parse environment variables for the main config (excluding databases)
+	// We need to parse each section separately to avoid conflicts
+	if err := parseConfigSections(config); err != nil {
+		return fmt.Errorf("failed to parse environment variables: %w", err)
+	}
+
+	return nil
+}
+
+// parseConfigSections parses environment variables for different config sections
+func parseConfigSections(config *Config) error {
+	// Parse AWS config
+	if err := env.Parse(&config.AWS); err != nil {
+		return fmt.Errorf("failed to parse AWS environment variables: %w", err)
+	}
+
+	// Parse Local config
+	if err := env.Parse(&config.Local); err != nil {
+		return fmt.Errorf("failed to parse Local environment variables: %w", err)
+	}
+
+	// Parse Backup config
+	if err := env.Parse(&config.Backup); err != nil {
+		return fmt.Errorf("failed to parse Backup environment variables: %w", err)
+	}
+
+	// Parse Import config
+	if err := env.Parse(&config.Import); err != nil {
+		return fmt.Errorf("failed to parse Import environment variables: %w", err)
+	}
+
+	// Parse Logging config
+	if err := env.Parse(&config.Logging); err != nil {
+		return fmt.Errorf("failed to parse Logging environment variables: %w", err)
+	}
+
+	return nil
+}
+
+// parseDatabaseEnv parses environment variables for a specific database
+func parseDatabaseEnv(db *DatabaseConfig, prefix string) error {
+	// Create a temporary struct with prefixed env tags
+	type TempDB struct {
+		Host     string `env:"HOST"`
+		Port     int    `env:"PORT"`
+		Username string `env:"USERNAME"`
+		Password string `env:"PASSWORD"`
+		Database string `env:"DATABASE"`
+		SSLMode  string `env:"SSL_MODE"`
+	}
+
+	tempDB := TempDB{
+		Host:     db.Host,
+		Port:     db.Port,
+		Username: db.Username,
+		Password: db.Password,
+		Database: db.Database,
+		SSLMode:  db.SSLMode,
+	}
+
+	// Parse with custom prefix
+	opts := env.Options{
+		Prefix: prefix,
+	}
+	if err := env.ParseWithOptions(&tempDB, opts); err != nil {
+		return err
+	}
+
+	// Update the original database config if environment variables were set
+	if os.Getenv(prefix+"HOST") != "" {
+		db.Host = tempDB.Host
+	}
+	if os.Getenv(prefix+"PORT") != "" {
+		db.Port = tempDB.Port
+	}
+	if os.Getenv(prefix+"USERNAME") != "" {
+		db.Username = tempDB.Username
+	}
+	if os.Getenv(prefix+"PASSWORD") != "" {
+		db.Password = tempDB.Password
+	}
+	if os.Getenv(prefix+"DATABASE") != "" {
+		db.Database = tempDB.Database
+	}
+	if os.Getenv(prefix+"SSL_MODE") != "" {
+		db.SSLMode = tempDB.SSLMode
+	}
+
+	return nil
 }
 
 // Validate checks if the configuration is valid

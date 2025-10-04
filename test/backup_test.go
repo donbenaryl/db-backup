@@ -600,7 +600,7 @@ func testLocalRestore(t *testing.T) {
 
 	// Create import configuration
 	importConfig := &config.ImportConfig{
-		TargetDatabase: config.DatabaseConfig{
+		TargetDatabase: config.ImportDatabaseConfig{
 			Host:     "localhost",
 			Port:     5433,
 			Username: "testuser",
@@ -636,7 +636,7 @@ func testRestoreWithVerification(t *testing.T) {
 
 	// Create import configuration
 	importConfig := &config.ImportConfig{
-		TargetDatabase: config.DatabaseConfig{
+		TargetDatabase: config.ImportDatabaseConfig{
 			Host:     "localhost",
 			Port:     5434,
 			Username: "testuser",
@@ -718,7 +718,7 @@ INSERT INTO test_products VALUES (3, 'Keyboard', 79.99, 'Mechanical keyboard', '
 }
 
 // verifyRestoredData verifies that the restored data is correct
-func verifyRestoredData(t *testing.T, dbConfig config.DatabaseConfig) error {
+func verifyRestoredData(t *testing.T, dbConfig config.ImportDatabaseConfig) error {
 	// Connect to the restored database
 	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 		dbConfig.Host, dbConfig.Port, dbConfig.Username, dbConfig.Password, dbConfig.Database, dbConfig.SSLMode)
