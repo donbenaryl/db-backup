@@ -1,4 +1,4 @@
-.PHONY: build run test clean docker-build docker-run help
+.PHONY: build run test clean docker-build docker-run test-setup test-run test-clean help
 
 # Default target
 help:
@@ -10,7 +10,11 @@ help:
 	@echo "  run-once       - Run backup once and exit"
 	@echo "  run-once-local - Run backup once with local storage"
 	@echo "  run-once-aws   - Run backup once with AWS S3"
-	@echo "  test           - Run tests"
+	@echo "  test           - Run basic tests"
+	@echo "  test-unit      - Run unit tests only"
+	@echo "  test-setup     - Setup test environment (Docker services)"
+	@echo "  test-run       - Run comprehensive integration tests"
+	@echo "  test-clean     - Clean up test environment"
 	@echo "  clean          - Clean build artifacts"
 	@echo "  docker-build   - Build Docker image"
 	@echo "  docker-run     - Run with Docker Compose"
@@ -44,9 +48,29 @@ run-once-local:
 run-once-aws:
 	go run ./cmd/main.go -config appsettings.aws.json -once
 
-# Run tests
+# Run basic tests (skip integration tests that require Docker)
 test:
 	go test ./...
+
+# Run unit tests only
+test-unit:
+	go test ./test/unit/... -v
+
+# Setup test environment
+test-setup:
+	docker-compose -f docker-compose.test.yml up -d
+	@echo "Waiting for services to be ready..."
+	@sleep 10
+	@echo "Test environment is ready!"
+
+# Run comprehensive integration tests
+test-run:
+	RUN_INTEGRATION_TESTS=true ./test/run_tests.sh
+
+# Clean up test environment
+test-clean:
+	docker-compose -f docker-compose.test.yml down -v
+	docker system prune -f
 
 # Clean build artifacts
 clean:
