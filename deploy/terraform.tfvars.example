@@ -1,0 +1,41 @@
+# AWS Configuration
+aws_region = "us-east-1"
+environment = "prod"
+
+# Lambda Function Configuration
+function_name = "postgres-backup-service"
+log_level = "info"
+log_retention_days = 14
+
+# S3 Bucket Configuration
+backup_bucket_name = "my-postgres-backup-storage"
+backup_retention_days = 2
+backup_prefix = "postgres-backup"
+
+# AWS Credentials (optional - leave empty to use IAM role)
+# aws_access_key_id = "your-access-key-id"
+# aws_secret_access_key = "your-secret-access-key"
+
+# SNS Topic for Alarms (optional)
+# alarm_sns_topic_arn = "arn:aws:sns:us-east-1:123456789012:backup-alerts"
+
+# Database Configuration
+databases = [
+  {
+    host     = "your-db-host.example.com"
+    port     = 5432
+    username = "backup_user"
+    password = "your-secure-password"
+    database = "your_database"
+    ssl_mode = "require"
+  },
+  {
+    host     = "your-second-db-host.example.com"
+    port     = 5432
+    username = "backup_user"
+    password = "your-secure-password"
+    database = "your_second_database"
+    ssl_mode = "require"
+  }
+]
+

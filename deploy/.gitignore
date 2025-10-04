@@ -1,0 +1,28 @@
+# Terraform files
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfplan.*
+.terraform/
+.terraform.lock.hcl
+
+# Terraform variables (may contain sensitive data)
+terraform.tfvars
+*.auto.tfvars
+
+# Lambda deployment package
+lambda.zip
+*.zip
+
+# AWS credentials
+.aws/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db

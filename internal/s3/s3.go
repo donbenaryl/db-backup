@@ -26,15 +26,23 @@ type S3Manager struct {
 
 // NewS3Manager creates a new S3 manager instance
 func NewS3Manager(awsConfig *config.AWSConfig, logger *logrus.Logger) (*S3Manager, error) {
-	// Create AWS session
-	sess, err := session.NewSession(&aws.Config{
+	// Create AWS session configuration
+	awsConfigObj := &aws.Config{
 		Region: aws.String(awsConfig.Region),
-		Credentials: credentials.NewStaticCredentials(
+	}
+
+	// Only set static credentials if they are provided (for local development)
+	// In Lambda, we rely on IAM role for authentication
+	if awsConfig.AccessKeyID != "" && awsConfig.SecretAccessKey != "" {
+		awsConfigObj.Credentials = credentials.NewStaticCredentials(
 			awsConfig.AccessKeyID,
 			awsConfig.SecretAccessKey,
 			"",
-		),
-	})
+		)
+	}
+
+	// Create AWS session
+	sess, err := session.NewSession(awsConfigObj)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create AWS session: %w", err)
 	}
