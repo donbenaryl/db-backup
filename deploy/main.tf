@@ -259,7 +259,25 @@ resource "aws_iam_role_policy_attachment" "lambda_basic_attachment" {
   policy_arn = aws_iam_policy.lambda_basic_policy.arn
 }
 
-# Create deployment package - only include the built binary and necessary files
+# Build Lambda deployment package using Docker
+resource "null_resource" "lambda_build" {
+  provisioner "local-exec" {
+    command = <<-EOT
+      cd ${path.module}/..
+      docker build -f Dockerfile.lambda -t db-backuper-lambda .
+      docker create --name temp-container db-backuper-lambda
+      docker cp temp-container:/bootstrap ./cmd/lambda/bootstrap
+      docker rm temp-container
+    EOT
+  }
+
+  triggers = {
+    source_hash = filemd5("${path.module}/../cmd/lambda/main.go")
+    dockerfile_hash = filemd5("${path.module}/../Dockerfile.lambda")
+  }
+}
+
+# Create deployment package - only include the built binary
 data "archive_file" "lambda_zip" {
   type        = "zip"
   source_dir  = "../cmd/lambda"
@@ -267,6 +285,8 @@ data "archive_file" "lambda_zip" {
   excludes = [
     "*.go"  # Exclude source files, only include the built binary
   ]
+
+  depends_on = [null_resource.lambda_build]
 }
 
 # Upload Lambda deployment package to S3

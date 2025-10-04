@@ -37,6 +37,11 @@ func Handler(ctx context.Context, event LambdaEvent) (LambdaResponse, error) {
 
 	logger.Info("Starting PostgreSQL backup Lambda function")
 
+	// Log Lambda environment information for debugging
+	logger.Infof("Lambda environment: PATH=%s", os.Getenv("PATH"))
+	logger.Infof("Lambda runtime: %s", os.Getenv("AWS_EXECUTION_ENV"))
+	logger.Infof("Lambda region: %s", os.Getenv("AWS_REGION"))
+
 	// Load configuration
 	cfg, err := loadLambdaConfig()
 	if err != nil {
@@ -153,6 +158,9 @@ func parseLambdaDatabases(cfg *config.Config) error {
 	for {
 		host := os.Getenv(fmt.Sprintf("DB_%d_HOST", i))
 		if host == "" {
+			if i == 0 {
+				return fmt.Errorf("no database configuration found - please set DB_0_HOST environment variable")
+			}
 			break // No more databases
 		}
 
@@ -175,6 +183,17 @@ func parseLambdaDatabases(cfg *config.Config) error {
 		// Set default SSL mode if not provided
 		if db.SSLMode == "" {
 			db.SSLMode = "disable"
+		}
+
+		// Validate required fields
+		if db.Username == "" {
+			return fmt.Errorf("DB_%d_USERNAME is required", i)
+		}
+		if db.Password == "" {
+			return fmt.Errorf("DB_%d_PASSWORD is required", i)
+		}
+		if db.Database == "" {
+			return fmt.Errorf("DB_%d_DATABASE is required", i)
 		}
 
 		cfg.Databases = append(cfg.Databases, db)
@@ -236,8 +255,20 @@ func handleBackup(cfg *config.Config, logger *logrus.Logger) (LambdaResponse, er
 
 	// Create PostgreSQL backup instances for each database
 	var postgresBackups []*backup.PostgresBackup
-	for _, dbConfig := range cfg.Databases {
+	for i, dbConfig := range cfg.Databases {
+		logger.Infof("Initializing backup for database %d: %s", i+1, dbConfig.Database)
 		postgresBackup := backup.NewPostgresBackup(&dbConfig, logger)
+
+		// Test connection before adding to backup list
+		if err := postgresBackup.TestConnection(); err != nil {
+			logger.WithError(err).Errorf("Connection test failed for database %d", i+1)
+			return LambdaResponse{
+				StatusCode: 500,
+				Message:    fmt.Sprintf("Database connection test failed for database %d: %v", i+1, err),
+				Success:    false,
+			}, nil
+		}
+
 		postgresBackups = append(postgresBackups, postgresBackup)
 	}
 

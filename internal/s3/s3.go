@@ -10,7 +10,6 @@ import (
 	"db-backuper/internal/config"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
@@ -29,16 +28,6 @@ func NewS3Manager(awsConfig *config.AWSConfig, logger *logrus.Logger) (*S3Manage
 	// Create AWS session configuration
 	awsConfigObj := &aws.Config{
 		Region: aws.String(awsConfig.Region),
-	}
-
-	// Only set static credentials if they are provided (for local development)
-	// In Lambda, we rely on IAM role for authentication
-	if awsConfig.AccessKeyID != "" && awsConfig.SecretAccessKey != "" {
-		awsConfigObj.Credentials = credentials.NewStaticCredentials(
-			awsConfig.AccessKeyID,
-			awsConfig.SecretAccessKey,
-			"",
-		)
 	}
 
 	// Create AWS session

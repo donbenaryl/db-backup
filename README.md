@@ -14,6 +14,7 @@ A Go-based service that automatically backs up multiple PostgreSQL databases to 
 - **Connection testing** before running backups
 - **Comprehensive logging** with configurable levels
 - **Docker support** for easy deployment
+- **AWS Lambda support** with PostgreSQL client tools included
 
 ## Configuration
 
@@ -239,6 +240,68 @@ docker-compose up -d
 ```
 
 The docker-compose file includes a test PostgreSQL instance for development.
+
+### AWS Lambda Deployment
+
+The service can be deployed as an AWS Lambda function with automatic PostgreSQL client tools included.
+
+#### Prerequisites
+
+- AWS CLI configured with appropriate permissions
+- Terraform installed
+- Docker installed and running
+
+#### Quick Deployment
+
+```bash
+# Deploy the Lambda function
+./deploy-lambda.sh
+
+# Test the function (replace with your function name)
+./test-lambda.sh your-function-name
+```
+
+#### Manual Deployment
+
+1. **Build the Lambda layer with PostgreSQL tools:**
+   ```bash
+   cd lambda-layer
+   ./build.sh
+   cd ..
+   ```
+
+2. **Build the Lambda function binary:**
+   ```bash
+   docker build -f Dockerfile.lambda -t db-backuper-lambda .
+   docker create --name temp-container db-backuper-lambda
+   docker cp temp-container:/bootstrap ./cmd/lambda/bootstrap
+   docker rm temp-container
+   ```
+
+3. **Deploy with Terraform:**
+   ```bash
+   cd deploy
+   terraform init
+   terraform plan
+   terraform apply
+   ```
+
+#### Lambda Configuration
+
+The Lambda function uses environment variables for configuration:
+
+- **Database Configuration**: `DB_0_HOST`, `DB_0_PORT`, `DB_0_USERNAME`, etc.
+- **AWS Configuration**: `AWS_BUCKET`, `AWS_REGION`
+- **Backup Configuration**: `BACKUP_RETENTION_DAYS`, `BACKUP_PREFIX`
+- **Logging Configuration**: `LOG_LEVEL`, `LOG_FORMAT`
+
+#### Lambda Features
+
+- **Automatic PostgreSQL client tools**: `pg_dump`, `pg_restore`, `psql` included via Lambda layer
+- **Scheduled execution**: Runs every 3 hours via EventBridge
+- **S3 integration**: Automatically uploads backups to S3
+- **CloudWatch logging**: Comprehensive logging and monitoring
+- **Error handling**: Automatic retry and error reporting
 
 ## Backup File Organization
 

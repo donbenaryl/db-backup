@@ -1,0 +1,34 @@
+# Build stage for Lambda function
+FROM --platform=linux/amd64 golang:1.25-alpine AS builder
+
+# Install build dependencies
+RUN apk add --no-cache git ca-certificates
+
+WORKDIR /app
+
+# Copy go mod files
+COPY go.mod go.sum ./
+
+# Download dependencies
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build the Lambda binary
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -ldflags='-w -s -extldflags "-static"' \
+    -a -installsuffix cgo \
+    -o bootstrap ./cmd/lambda/main.go
+
+# Final stage - minimal runtime
+FROM scratch
+
+# Copy the binary
+COPY --from=builder /app/bootstrap /bootstrap
+
+# Copy CA certificates
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+
+# Set the entrypoint
+ENTRYPOINT ["/bootstrap"]

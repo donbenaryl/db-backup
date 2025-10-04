@@ -1,21 +1,28 @@
 package backup
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"db-backuper/internal/config"
 
 	"github.com/sirupsen/logrus"
+	"github.com/uptrace/bun"
+	"github.com/uptrace/bun/dialect/pgdialect"
+	"github.com/uptrace/bun/driver/pgdriver"
 )
 
-// PostgresBackup handles PostgreSQL database backups
+// PostgresBackup handles PostgreSQL database backups using bun ORM
 type PostgresBackup struct {
 	config *config.DatabaseConfig
 	logger *logrus.Logger
+	db     *bun.DB
 }
 
 // NewPostgresBackup creates a new PostgreSQL backup instance
@@ -26,57 +33,522 @@ func NewPostgresBackup(dbConfig *config.DatabaseConfig, logger *logrus.Logger) *
 	}
 }
 
-// CreateBackup creates a PostgreSQL database backup
-func (pb *PostgresBackup) CreateBackup() (string, error) {
-	// Generate backup filename with timestamp
-	timestamp := time.Now().Format("2006-01-02_15-04-05")
-	backupFilename := fmt.Sprintf("%s_%s.sql", pb.config.Database, timestamp)
-
-	// Create temporary directory for backup
-	tempDir := "/tmp/db-backuper"
-	if err := os.MkdirAll(tempDir, 0755); err != nil {
-		return "", fmt.Errorf("failed to create temp directory: %w", err)
+// connect establishes a database connection using bun
+func (pb *PostgresBackup) connect(ctx context.Context) error {
+	if pb.db != nil {
+		return nil // Already connected
 	}
 
-	backupPath := filepath.Join(tempDir, backupFilename)
+	// Build DSN connection string
+	dsn := pb.buildConnectionString()
+	pb.logger.Infof("Connecting to database using bun ORM")
+	pb.logger.Infof("DSN: %s", pb.maskPassword(dsn))
 
-	// Set PGPASSWORD environment variable for pg_dump
-	env := os.Environ()
-	env = append(env, fmt.Sprintf("PGPASSWORD=%s", pb.config.Password))
+	// Create bun database connection
+	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn)))
+	db := bun.NewDB(sqldb, pgdialect.New())
 
-	// Build pg_dump command
-	cmd := exec.Command("pg_dump",
-		"-h", pb.config.Host,
-		"-p", fmt.Sprintf("%d", pb.config.Port),
-		"-U", pb.config.Username,
-		"-d", pb.config.Database,
-		"-f", backupPath,
-		"--verbose",
-		"--no-password",
-	)
-
-	cmd.Env = env
-
-	pb.logger.Infof("Creating backup: %s", backupPath)
-
-	// Execute pg_dump
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		pb.logger.Errorf("pg_dump failed: %s", string(output))
-		return "", fmt.Errorf("pg_dump failed: %w", err)
+	// Test connection
+	if err := db.PingContext(ctx); err != nil {
+		pb.logger.Errorf("Failed to connect to database: %v", err)
+		return fmt.Errorf("database connection failed: %w", err)
 	}
 
-	pb.logger.Infof("Backup created successfully: %s", backupPath)
-	return backupPath, nil
+	pb.db = db
+	pb.logger.Infof("Successfully connected to database using bun ORM")
+	return nil
 }
 
-// CleanupBackup removes the local backup file
-func (pb *PostgresBackup) CleanupBackup(backupPath string) error {
-	if err := os.Remove(backupPath); err != nil {
-		pb.logger.Warnf("Failed to cleanup backup file %s: %v", backupPath, err)
+// close closes the database connection
+func (pb *PostgresBackup) close() error {
+	if pb.db != nil {
+		err := pb.db.Close()
+		pb.db = nil
+		return err
+	}
+	return nil
+}
+
+// TestConnection tests the database connection using bun
+func (pb *PostgresBackup) TestConnection() error {
+	pb.logger.Infof("Testing database connection using bun ORM")
+
+	// Create context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Connect to database
+	if err := pb.connect(ctx); err != nil {
+		return err
+	}
+	defer pb.close()
+
+	// Test with a simple query
+	var result int
+	err := pb.db.NewSelect().ColumnExpr("1").Scan(ctx, &result)
+	if err != nil {
+		pb.logger.Errorf("Failed to execute test query: %v", err)
+		return fmt.Errorf("database query test failed: %w", err)
+	}
+
+	if result != 1 {
+		pb.logger.Errorf("Unexpected query result: %d", result)
+		return fmt.Errorf("unexpected query result: %d", result)
+	}
+
+	pb.logger.Infof("Database connection test successful using bun ORM")
+	return nil
+}
+
+// CreateBackup creates a database backup using bun and returns the backup path
+func (pb *PostgresBackup) CreateBackup() (string, error) {
+	// Generate backup filename
+	timestamp := time.Now().Format("2006-01-02_15-04-05")
+	backupPath := fmt.Sprintf("/tmp/db-backuper/%s_%s.sql", pb.config.Database, timestamp)
+
+	err := pb.createBackup(backupPath)
+	return backupPath, err
+}
+
+// createBackup creates a database backup using bun
+func (pb *PostgresBackup) createBackup(backupPath string) error {
+	pb.logger.Infof("Creating database backup using bun ORM: %s", backupPath)
+
+	// Create context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	// Connect to database
+	if err := pb.connect(ctx); err != nil {
+		return err
+	}
+	defer pb.close()
+
+	// Create backup directory if it doesn't exist
+	backupDir := filepath.Dir(backupPath)
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		return fmt.Errorf("failed to create backup directory: %w", err)
+	}
+
+	// Create backup file
+	backupFile, err := os.Create(backupPath)
+	if err != nil {
+		return fmt.Errorf("failed to create backup file: %w", err)
+	}
+	defer backupFile.Close()
+
+	// Write SQL header
+	header := fmt.Sprintf(`-- PostgreSQL database backup created by db-backuper
+-- Database: %s
+-- Host: %s
+-- Port: %d
+-- Created: %s
+-- Generated by bun ORM
+
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+SET idle_in_transaction_session_timeout = 0;
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
+SET check_function_bodies = false;
+SET xmloption = content;
+SET client_min_messages = warning;
+SET row_security = off;
+
+`, pb.config.Database, pb.config.Host, pb.config.Port, time.Now().Format(time.RFC3339))
+
+	if _, err := backupFile.WriteString(header); err != nil {
+		return fmt.Errorf("failed to write backup header: %w", err)
+	}
+
+	// Get database schema
+	if err := pb.backupSchema(ctx, backupFile); err != nil {
+		return fmt.Errorf("failed to backup schema: %w", err)
+	}
+
+	// Get database data
+	if err := pb.backupData(ctx, backupFile); err != nil {
+		return fmt.Errorf("failed to backup data: %w", err)
+	}
+
+	// Write footer
+	footer := fmt.Sprintf(`
+-- Backup completed at: %s
+`, time.Now().Format(time.RFC3339))
+
+	if _, err := backupFile.WriteString(footer); err != nil {
+		return fmt.Errorf("failed to write backup footer: %w", err)
+	}
+
+	pb.logger.Infof("Database backup completed successfully: %s", backupPath)
+	return nil
+}
+
+// backupSchema backs up the database schema
+func (pb *PostgresBackup) backupSchema(ctx context.Context, backupFile *os.File) error {
+	pb.logger.Infof("Backing up database schema")
+
+	// Get all tables
+	var tables []string
+	err := pb.db.NewSelect().
+		Column("tablename").
+		Table("pg_tables").
+		Where("schemaname = ?", "public").
+		Scan(ctx, &tables)
+	if err != nil {
+		return fmt.Errorf("failed to get table list: %w", err)
+	}
+
+	// Write schema section header
+	if _, err := backupFile.WriteString("\n--\n-- Database Schema\n--\n\n"); err != nil {
 		return err
 	}
 
-	pb.logger.Infof("Cleaned up backup file: %s", backupPath)
+	// Backup each table schema
+	for _, table := range tables {
+		if err := pb.backupTableSchema(ctx, backupFile, table); err != nil {
+			pb.logger.Warnf("Failed to backup schema for table %s: %v", table, err)
+			continue
+		}
+	}
+
+	// Get all functions
+	if err := pb.backupFunctions(ctx, backupFile); err != nil {
+		pb.logger.Warnf("Failed to backup functions: %v", err)
+	}
+
+	// Get all triggers
+	if err := pb.backupTriggers(ctx, backupFile); err != nil {
+		pb.logger.Warnf("Failed to backup triggers: %v", err)
+	}
+
+	return nil
+}
+
+// backupTableSchema backs up a single table's schema
+func (pb *PostgresBackup) backupTableSchema(ctx context.Context, backupFile *os.File, tableName string) error {
+	// Get table definition
+	var createTable string
+	err := pb.db.NewSelect().
+		ColumnExpr("pg_get_tabledef(?)", tableName).
+		Scan(ctx, &createTable)
+	if err != nil {
+		// Fallback: get basic table info
+		return pb.backupTableSchemaFallback(ctx, backupFile, tableName)
+	}
+
+	// Write table schema
+	if _, err := backupFile.WriteString(fmt.Sprintf("-- Table: %s\n", tableName)); err != nil {
+		return err
+	}
+	if _, err := backupFile.WriteString(createTable + ";\n\n"); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// backupTableSchemaFallback is a fallback method for getting table schema
+func (pb *PostgresBackup) backupTableSchemaFallback(ctx context.Context, backupFile *os.File, tableName string) error {
+	// Get column information
+	var columns []struct {
+		ColumnName    string  `bun:"column_name"`
+		DataType      string  `bun:"data_type"`
+		IsNullable    string  `bun:"is_nullable"`
+		ColumnDefault *string `bun:"column_default"`
+	}
+
+	err := pb.db.NewSelect().
+		Column("column_name", "data_type", "is_nullable", "column_default").
+		Table("information_schema.columns").
+		Where("table_name = ?", tableName).
+		Where("table_schema = ?", "public").
+		Order("ordinal_position").
+		Scan(ctx, &columns)
+	if err != nil {
+		return err
+	}
+
+	// Write basic table schema
+	if _, err := backupFile.WriteString(fmt.Sprintf("-- Table: %s\n", tableName)); err != nil {
+		return err
+	}
+	if _, err := backupFile.WriteString(fmt.Sprintf("CREATE TABLE %s (\n", tableName)); err != nil {
+		return err
+	}
+
+	// Write columns
+	for i, col := range columns {
+		line := fmt.Sprintf("    %s %s", col.ColumnName, col.DataType)
+		if col.IsNullable == "NO" {
+			line += " NOT NULL"
+		}
+		if col.ColumnDefault != nil {
+			line += fmt.Sprintf(" DEFAULT %s", *col.ColumnDefault)
+		}
+		if i < len(columns)-1 {
+			line += ","
+		}
+		line += "\n"
+		if _, err := backupFile.WriteString(line); err != nil {
+			return err
+		}
+	}
+
+	if _, err := backupFile.WriteString(");\n\n"); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// backupFunctions backs up database functions
+func (pb *PostgresBackup) backupFunctions(ctx context.Context, backupFile *os.File) error {
+	var functions []struct {
+		FunctionName string `bun:"proname"`
+		FunctionDef  string `bun:"prosrc"`
+	}
+
+	err := pb.db.NewSelect().
+		Column("proname", "prosrc").
+		Table("pg_proc").
+		Where("prokind = ?", "f").
+		Where("pronamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'public')").
+		Scan(ctx, &functions)
+	if err != nil {
+		return err
+	}
+
+	if len(functions) > 0 {
+		if _, err := backupFile.WriteString("--\n-- Functions\n--\n\n"); err != nil {
+			return err
+		}
+
+		for _, fn := range functions {
+			if _, err := backupFile.WriteString(fmt.Sprintf("-- Function: %s\n", fn.FunctionName)); err != nil {
+				return err
+			}
+			if _, err := backupFile.WriteString(fn.FunctionDef + ";\n\n"); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// backupTriggers backs up database triggers
+func (pb *PostgresBackup) backupTriggers(ctx context.Context, backupFile *os.File) error {
+	var triggers []struct {
+		TriggerName string `bun:"trigger_name"`
+		Event       string `bun:"event_manipulation"`
+		TableName   string `bun:"event_object_table"`
+		Action      string `bun:"action_statement"`
+	}
+
+	err := pb.db.NewSelect().
+		Column("trigger_name", "event_manipulation", "event_object_table", "action_statement").
+		Table("information_schema.triggers").
+		Where("trigger_schema = ?", "public").
+		Scan(ctx, &triggers)
+	if err != nil {
+		return err
+	}
+
+	if len(triggers) > 0 {
+		if _, err := backupFile.WriteString("--\n-- Triggers\n--\n\n"); err != nil {
+			return err
+		}
+
+		for _, trigger := range triggers {
+			if _, err := backupFile.WriteString(fmt.Sprintf("-- Trigger: %s on %s\n", trigger.TriggerName, trigger.TableName)); err != nil {
+				return err
+			}
+			if _, err := backupFile.WriteString(fmt.Sprintf("CREATE TRIGGER %s %s ON %s FOR EACH ROW %s;\n\n",
+				trigger.TriggerName, trigger.Event, trigger.TableName, trigger.Action)); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// backupData backs up the database data
+func (pb *PostgresBackup) backupData(ctx context.Context, backupFile *os.File) error {
+	pb.logger.Infof("Backing up database data")
+
+	// Get all tables
+	var tables []string
+	err := pb.db.NewSelect().
+		Column("tablename").
+		Table("pg_tables").
+		Where("schemaname = ?", "public").
+		Scan(ctx, &tables)
+	if err != nil {
+		return fmt.Errorf("failed to get table list: %w", err)
+	}
+
+	// Write data section header
+	if _, err := backupFile.WriteString("\n--\n-- Database Data\n--\n\n"); err != nil {
+		return err
+	}
+
+	// Backup each table's data
+	for _, table := range tables {
+		if err := pb.backupTableData(ctx, backupFile, table); err != nil {
+			pb.logger.Warnf("Failed to backup data for table %s: %v", table, err)
+			continue
+		}
+	}
+
+	return nil
+}
+
+// backupTableData backs up a single table's data
+func (pb *PostgresBackup) backupTableData(ctx context.Context, backupFile *os.File, tableName string) error {
+	// Get row count
+	var count int
+	err := pb.db.NewSelect().
+		ColumnExpr("COUNT(*)").
+		Table(tableName).
+		Scan(ctx, &count)
+	if err != nil {
+		return err
+	}
+
+	if count == 0 {
+		pb.logger.Debugf("Table %s is empty, skipping data backup", tableName)
+		return nil
+	}
+
+	pb.logger.Infof("Backing up %d rows from table %s", count, tableName)
+
+	// Get column names
+	var columns []string
+	err = pb.db.NewSelect().
+		Column("column_name").
+		Table("information_schema.columns").
+		Where("table_name = ?", tableName).
+		Where("table_schema = ?", "public").
+		Order("ordinal_position").
+		Scan(ctx, &columns)
+	if err != nil {
+		return err
+	}
+
+	// Write table data header
+	if _, err := backupFile.WriteString(fmt.Sprintf("-- Data for table: %s\n", tableName)); err != nil {
+		return err
+	}
+
+	// Get all rows and write them as INSERT statements
+	rows, err := pb.db.NewSelect().
+		Column(columns...).
+		Table(tableName).
+		Rows(ctx)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	// Write INSERT statements
+	for rows.Next() {
+		// Create a slice to hold the values
+		values := make([]interface{}, len(columns))
+		valuePtrs := make([]interface{}, len(columns))
+		for i := range values {
+			valuePtrs[i] = &values[i]
+		}
+
+		// Scan the row
+		if err := rows.Scan(valuePtrs...); err != nil {
+			return err
+		}
+
+		// Build INSERT statement
+		insertSQL := fmt.Sprintf("INSERT INTO %s (%s) VALUES (", tableName, strings.Join(columns, ", "))
+
+		valueStrings := make([]string, len(values))
+		for i, val := range values {
+			if val == nil {
+				valueStrings[i] = "NULL"
+			} else {
+				// Escape single quotes and wrap in quotes
+				str := fmt.Sprintf("%v", val)
+				str = strings.ReplaceAll(str, "'", "''")
+				valueStrings[i] = fmt.Sprintf("'%s'", str)
+			}
+		}
+
+		insertSQL += strings.Join(valueStrings, ", ") + ");\n"
+
+		if _, err := backupFile.WriteString(insertSQL); err != nil {
+			return err
+		}
+	}
+
+	if _, err := backupFile.WriteString("\n"); err != nil {
+		return err
+	}
+
+	return rows.Err()
+}
+
+// buildConnectionString builds a PostgreSQL DSN from the config
+func (pb *PostgresBackup) buildConnectionString() string {
+	// URL-encode the password to handle special characters like +, @, etc.
+	encodedPassword := url.QueryEscape(pb.config.Password)
+	encodedUsername := url.QueryEscape(pb.config.Username)
+	encodedDatabase := url.QueryEscape(pb.config.Database)
+
+	// Build DSN in the format: postgres://user:password@host:port/database?sslmode=prefer
+	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s",
+		encodedUsername, encodedPassword, pb.config.Host, pb.config.Port, encodedDatabase)
+
+	// Add SSL mode parameter
+	if pb.config.SSLMode != "" {
+		dsn += fmt.Sprintf("?sslmode=%s", url.QueryEscape(pb.config.SSLMode))
+	} else {
+		dsn += "?sslmode=disable"
+	}
+
+	return dsn
+}
+
+// maskPassword masks the password in a DSN for logging
+func (pb *PostgresBackup) maskPassword(dsn string) string {
+	// Mask password in DSN format: postgres://user:password@host:port/database
+	if strings.Contains(dsn, "://") && strings.Contains(dsn, "@") {
+		// Find the @ symbol and work backwards to find the password
+		atIndex := strings.Index(dsn, "@")
+		if atIndex > 0 {
+			// Find the last : before @ (which should be before the password)
+			colonIndex := strings.LastIndex(dsn[:atIndex], ":")
+			if colonIndex > 0 {
+				// Replace everything between : and @ with ***
+				masked := dsn[:colonIndex+1] + "***" + dsn[atIndex:]
+				return masked
+			}
+		}
+	}
+	return dsn
+}
+
+// CleanupBackup removes the backup file
+func (pb *PostgresBackup) CleanupBackup(backupPath string) error {
+	if backupPath == "" {
+		return nil
+	}
+
+	pb.logger.Infof("Cleaning up backup file: %s", backupPath)
+
+	if err := os.Remove(backupPath); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("failed to remove backup file: %w", err)
+		}
+		// File doesn't exist, that's fine
+	}
+
 	return nil
 }
