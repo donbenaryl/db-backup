@@ -17,6 +17,7 @@ terraform {
 }
 
 provider "aws" {
+  profile = "don"
   region = var.aws_region
 }
 
@@ -282,7 +283,7 @@ resource "aws_lambda_function" "backup_function" {
   s3_key          = aws_s3_object.lambda_deployment_package.key
   function_name    = var.function_name
   role            = aws_iam_role.lambda_role.arn
-  handler         = "main"
+  handler         = "bootstrap"
   source_code_hash = data.archive_file.lambda_zip.output_base64sha256
   runtime         = "provided.al2"
   timeout         = 900 # 15 minutes

@@ -57,8 +57,8 @@ build_lambda() {
     
     cd "$DEPLOY_DIR/.."
     
-    # Build for Linux (Lambda runtime)
-    GOOS=linux GOARCH=amd64 go build -o cmd/lambda/main cmd/lambda/main.go
+    # Build for Linux (Lambda runtime) - use 'bootstrap' for provided.al2 runtime
+    GOOS=linux GOARCH=amd64 go build -o cmd/lambda/bootstrap cmd/lambda/main.go
     
     if [ $? -eq 0 ]; then
         print_success "Lambda function built successfully"
@@ -133,7 +133,7 @@ cleanup() {
     DEPLOY_DIR="$(cd "$(dirname "$0")" && pwd)"
     
     rm -f tfplan
-    rm -f "$DEPLOY_DIR/../cmd/lambda/main"
+    rm -f "$DEPLOY_DIR/../cmd/lambda/bootstrap"
     
     print_success "Cleanup completed"
 }
