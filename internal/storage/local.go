@@ -32,12 +32,12 @@ func NewLocalStorage(localConfig *config.LocalConfig, logger *logrus.Logger) (*L
 }
 
 // SaveBackup saves a backup file to local storage
-func (ls *LocalStorage) SaveBackup(localFilePath, backupPrefix string) (string, error) {
+func (ls *LocalStorage) SaveBackup(localFilePath, backupPrefix, databaseName string) (string, error) {
 	filename := filepath.Base(localFilePath)
 
-	// Create date-based directory structure
+	// Create database-specific and date-based directory structure
 	dateDir := time.Now().Format("2006-01-02")
-	backupDir := filepath.Join(ls.config.Path, backupPrefix, dateDir)
+	backupDir := filepath.Join(ls.config.Path, backupPrefix, databaseName, dateDir)
 
 	if err := os.MkdirAll(backupDir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create backup directory %s: %w", backupDir, err)
@@ -68,46 +68,67 @@ func (ls *LocalStorage) DeleteOldBackups(backupPrefix string, retentionDays int)
 		return nil
 	}
 
-	// Read the backup directory
+	// Read the backup directory to find database directories
 	entries, err := os.ReadDir(backupBaseDir)
 	if err != nil {
 		return fmt.Errorf("failed to read backup directory: %w", err)
 	}
 
-	var deletedCount int
+	var totalDeletedCount int
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
 
-		// Parse date from directory name (YYYY-MM-DD format)
-		dirName := entry.Name()
-		if len(dirName) != 10 || strings.Count(dirName, "-") != 2 {
-			ls.logger.Warnf("Skipping directory with invalid date format: %s", dirName)
-			continue
-		}
+		// This is a database directory
+		databaseName := entry.Name()
+		databaseDir := filepath.Join(backupBaseDir, databaseName)
 
-		dirDate, err := time.Parse("2006-01-02", dirName)
+		// Read date directories within the database directory
+		dateEntries, err := os.ReadDir(databaseDir)
 		if err != nil {
-			ls.logger.Warnf("Failed to parse date from directory %s: %v", dirName, err)
+			ls.logger.Warnf("Failed to read database directory %s: %v", databaseName, err)
 			continue
 		}
 
-		// Check if directory is older than retention period
-		if dirDate.Before(cutoffDate) {
-			dirPath := filepath.Join(backupBaseDir, dirName)
-			ls.logger.Infof("Deleting old backup directory: %s", dirPath)
-
-			if err := os.RemoveAll(dirPath); err != nil {
-				ls.logger.Errorf("Failed to delete directory %s: %v", dirPath, err)
+		var deletedCount int
+		for _, dateEntry := range dateEntries {
+			if !dateEntry.IsDir() {
 				continue
 			}
 
-			deletedCount++
+			// Parse date from directory name (YYYY-MM-DD format)
+			dirName := dateEntry.Name()
+			if len(dirName) != 10 || strings.Count(dirName, "-") != 2 {
+				ls.logger.Warnf("Skipping directory with invalid date format: %s", dirName)
+				continue
+			}
+
+			dirDate, err := time.Parse("2006-01-02", dirName)
+			if err != nil {
+				ls.logger.Warnf("Failed to parse date from directory %s: %v", dirName, err)
+				continue
+			}
+
+			// Check if directory is older than retention period
+			if dirDate.Before(cutoffDate) {
+				dirPath := filepath.Join(databaseDir, dirName)
+				ls.logger.Infof("Deleting old backup directory: %s", dirPath)
+
+				if err := os.RemoveAll(dirPath); err != nil {
+					ls.logger.Errorf("Failed to delete directory %s: %v", dirPath, err)
+					continue
+				}
+
+				deletedCount++
+			}
 		}
+
+		ls.logger.Infof("Deleted %d old backup directories for database %s", deletedCount, databaseName)
+		totalDeletedCount += deletedCount
 	}
 
-	ls.logger.Infof("Deleted %d old backup directories", deletedCount)
+	ls.logger.Infof("Total deleted %d old backup directories across all databases", totalDeletedCount)
 	return nil
 }
 

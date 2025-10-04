@@ -1,11 +1,13 @@
 # PostgreSQL Database Backup Service
 
-A Go-based service that automatically backs up PostgreSQL databases to local storage or AWS S3 with configurable retention policies.
+A Go-based service that automatically backs up multiple PostgreSQL databases to local storage or AWS S3 with configurable retention policies.
 
 ## Features
 
 - **Automatic PostgreSQL backups** using `pg_dump`
+- **Multiple database support** with individual configuration
 - **Flexible storage options**: Local filesystem or AWS S3
+- **Database-specific folders** for organized backup storage
 - **Configurable retention policy** (default: 7 days)
 - **Scheduled backups** using cron expressions
 - **One-time backup** option
@@ -20,14 +22,24 @@ All configuration is managed through `appsettings.json`. You must configure eith
 **Local Storage Configuration:**
 ```json
 {
-  "database": {
-    "host": "localhost",
-    "port": 5432,
-    "username": "postgres",
-    "password": "password",
-    "database": "mydb",
-    "ssl_mode": "disable"
-  },
+  "databases": [
+    {
+      "host": "localhost",
+      "port": 5432,
+      "username": "postgres",
+      "password": "password",
+      "database": "mydb1",
+      "ssl_mode": "disable"
+    },
+    {
+      "host": "localhost",
+      "port": 5432,
+      "username": "postgres",
+      "password": "password",
+      "database": "mydb2",
+      "ssl_mode": "disable"
+    }
+  ],
   "local": {
     "path": "/backups"
   },
@@ -46,14 +58,24 @@ All configuration is managed through `appsettings.json`. You must configure eith
 **AWS S3 Configuration:**
 ```json
 {
-  "database": {
-    "host": "localhost",
-    "port": 5432,
-    "username": "postgres",
-    "password": "password",
-    "database": "mydb",
-    "ssl_mode": "disable"
-  },
+  "databases": [
+    {
+      "host": "localhost",
+      "port": 5432,
+      "username": "postgres",
+      "password": "password",
+      "database": "mydb1",
+      "ssl_mode": "disable"
+    },
+    {
+      "host": "localhost",
+      "port": 5432,
+      "username": "postgres",
+      "password": "password",
+      "database": "mydb2",
+      "ssl_mode": "disable"
+    }
+  ],
   "aws": {
     "region": "us-east-1",
     "bucket": "my-backup-bucket",
@@ -75,12 +97,15 @@ All configuration is managed through `appsettings.json`. You must configure eith
 ### Configuration Options
 
 #### Database Configuration
+The `databases` array contains one or more database configurations:
 - `host`: PostgreSQL server hostname
 - `port`: PostgreSQL server port (default: 5432)
 - `username`: Database username
 - `password`: Database password
 - `database`: Database name to backup
 - `ssl_mode`: SSL mode (disable, require, verify-full, etc.)
+
+Each database can have different connection settings, allowing you to backup databases from different servers or with different credentials.
 
 #### Local Storage Configuration
 - `path`: Local directory path for storing backups
@@ -150,37 +175,53 @@ The docker-compose file includes a test PostgreSQL instance for development.
 ## Backup File Organization
 
 ### Local Storage
-Backups are organized locally with the following structure:
+Backups are organized locally with database-specific folders:
 ```
 /backup-path/
 └── backup-prefix/
-    └── YYYY-MM-DD/
-        └── database-name_YYYY-MM-DD_HH-MM-SS.sql
+    ├── database1/
+    │   └── YYYY-MM-DD/
+    │       └── database1_YYYY-MM-DD_HH-MM-SS.sql
+    └── database2/
+        └── YYYY-MM-DD/
+            └── database2_YYYY-MM-DD_HH-MM-SS.sql
 ```
 
 Example:
 ```
 /backups/
 └── postgres-backup/
-    └── 2024-01-15/
-        └── mydb_2024-01-15_14-30-25.sql
+    ├── mydb1/
+    │   └── 2024-01-15/
+    │       └── mydb1_2024-01-15_14-30-25.sql
+    └── mydb2/
+        └── 2024-01-15/
+            └── mydb2_2024-01-15_14-30-25.sql
 ```
 
 ### AWS S3 Storage
-Backups are organized in S3 with the following structure:
+Backups are organized in S3 with database-specific folders:
 ```
 s3://bucket-name/
 └── backup-prefix/
-    └── YYYY-MM-DD/
-        └── database-name_YYYY-MM-DD_HH-MM-SS.sql
+    ├── database1/
+    │   └── YYYY-MM-DD/
+    │       └── database1_YYYY-MM-DD_HH-MM-SS.sql
+    └── database2/
+        └── YYYY-MM-DD/
+            └── database2_YYYY-MM-DD_HH-MM-SS.sql
 ```
 
 Example:
 ```
 s3://my-backup-bucket/
 └── postgres-backup/
-    └── 2024-01-15/
-        └── mydb_2024-01-15_14-30-25.sql
+    ├── mydb1/
+    │   └── 2024-01-15/
+    │       └── mydb1_2024-01-15_14-30-25.sql
+    └── mydb2/
+        └── 2024-01-15/
+            └── mydb2_2024-01-15_14-30-25.sql
 ```
 
 ## Retention Policy

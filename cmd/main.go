@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -35,7 +37,10 @@ func main() {
 	logger.Info("Starting PostgreSQL backup service")
 
 	// Initialize backup components
-	postgresBackup := backup.NewPostgresBackup(&cfg.Database, logger)
+	postgresBackups := make([]*backup.PostgresBackup, len(cfg.Databases))
+	for i, dbConfig := range cfg.Databases {
+		postgresBackups[i] = backup.NewPostgresBackup(&dbConfig, logger)
+	}
 
 	var storageManager interface{}
 	if cfg.IsLocalStorage() {
@@ -55,13 +60,13 @@ func main() {
 	}
 
 	// Test connections
-	if err := testConnections(postgresBackup, storageManager, logger); err != nil {
+	if err := testConnections(postgresBackups, storageManager, logger); err != nil {
 		logger.Fatalf("Connection test failed: %v", err)
 	}
 
 	if *runOnce {
 		// Run backup once and exit
-		if err := performBackup(postgresBackup, storageManager, &cfg.Backup, logger); err != nil {
+		if err := performBackup(postgresBackups, storageManager, &cfg.Backup, logger); err != nil {
 			logger.Fatalf("Backup failed: %v", err)
 		}
 		logger.Info("Backup completed successfully")
@@ -71,7 +76,7 @@ func main() {
 	// Setup scheduled backups
 	c := cron.New()
 	_, err = c.AddFunc(cfg.Backup.Schedule, func() {
-		if err := performBackup(postgresBackup, storageManager, &cfg.Backup, logger); err != nil {
+		if err := performBackup(postgresBackups, storageManager, &cfg.Backup, logger); err != nil {
 			logger.Errorf("Scheduled backup failed: %v", err)
 		}
 	})
@@ -115,7 +120,7 @@ func setupLogger(loggingConfig config.LoggingConfig) *logrus.Logger {
 }
 
 // testConnections tests database and storage connections
-func testConnections(postgresBackup *backup.PostgresBackup, storageManager interface{}, logger *logrus.Logger) error {
+func testConnections(postgresBackups []*backup.PostgresBackup, storageManager interface{}, logger *logrus.Logger) error {
 	logger.Info("Testing connections...")
 
 	// Test storage connection
@@ -132,66 +137,94 @@ func testConnections(postgresBackup *backup.PostgresBackup, storageManager inter
 		return fmt.Errorf("unknown storage manager type")
 	}
 
-	// Test database connection by attempting to create a backup
-	logger.Info("Testing database connection...")
-	backupPath, err := postgresBackup.CreateBackup()
-	if err != nil {
-		return fmt.Errorf("database connection test failed: %w", err)
-	}
+	// Test database connections by attempting to create a backup for each database
+	logger.Info("Testing database connections...")
+	for i, postgresBackup := range postgresBackups {
+		logger.Infof("Testing connection for database %d...", i+1)
+		backupPath, err := postgresBackup.CreateBackup()
+		if err != nil {
+			return fmt.Errorf("database %d connection test failed: %w", i+1, err)
+		}
 
-	// Cleanup test backup
-	if err := postgresBackup.CleanupBackup(backupPath); err != nil {
-		logger.Warnf("Failed to cleanup test backup: %v", err)
+		// Cleanup test backup
+		if err := postgresBackup.CleanupBackup(backupPath); err != nil {
+			logger.Warnf("Failed to cleanup test backup for database %d: %v", i+1, err)
+		}
 	}
 
 	logger.Info("All connection tests passed")
 	return nil
 }
 
-// performBackup performs a complete backup operation
-func performBackup(postgresBackup *backup.PostgresBackup, storageManager interface{}, backupConfig *config.BackupConfig, logger *logrus.Logger) error {
+// performBackup performs a complete backup operation for all databases
+func performBackup(postgresBackups []*backup.PostgresBackup, storageManager interface{}, backupConfig *config.BackupConfig, logger *logrus.Logger) error {
 	startTime := time.Now()
-	logger.Info("Starting backup operation")
+	logger.Infof("Starting backup operation for %d databases", len(postgresBackups))
 
-	// Create database backup
-	backupPath, err := postgresBackup.CreateBackup()
-	if err != nil {
-		return fmt.Errorf("failed to create database backup: %w", err)
-	}
+	var successfulBackups int
+	var failedBackups int
 
-	// Save backup to storage
-	var finalPath string
-	switch sm := storageManager.(type) {
-	case *s3.S3Manager:
-		s3Key, err := sm.UploadBackup(backupPath, backupConfig.BackupPrefix)
+	// Backup each database
+	for i, postgresBackup := range postgresBackups {
+		logger.Infof("Backing up database %d of %d", i+1, len(postgresBackups))
+
+		// Create database backup
+		backupPath, err := postgresBackup.CreateBackup()
 		if err != nil {
-			// Cleanup local backup file on upload failure
-			if cleanupErr := postgresBackup.CleanupBackup(backupPath); cleanupErr != nil {
-				logger.Warnf("Failed to cleanup backup file after upload failure: %v", cleanupErr)
-			}
-			return fmt.Errorf("failed to upload backup to S3: %w", err)
+			logger.Errorf("Failed to create backup for database %d: %v", i+1, err)
+			failedBackups++
+			continue
 		}
-		finalPath = s3Key
-	case *storage.LocalStorage:
-		localPath, err := sm.SaveBackup(backupPath, backupConfig.BackupPrefix)
-		if err != nil {
-			// Cleanup local backup file on save failure
-			if cleanupErr := postgresBackup.CleanupBackup(backupPath); cleanupErr != nil {
-				logger.Warnf("Failed to cleanup backup file after save failure: %v", cleanupErr)
+
+		// Get database name from the backup path (it's in the filename)
+		// Format: database-name_YYYY-MM-DD_HH-MM-SS.sql
+		filename := filepath.Base(backupPath)
+		databaseName := strings.Split(filename, "_")[0]
+
+		// Save backup to storage
+		var finalPath string
+		switch sm := storageManager.(type) {
+		case *s3.S3Manager:
+			s3Key, err := sm.UploadBackup(backupPath, backupConfig.BackupPrefix, databaseName)
+			if err != nil {
+				// Cleanup local backup file on upload failure
+				if cleanupErr := postgresBackup.CleanupBackup(backupPath); cleanupErr != nil {
+					logger.Warnf("Failed to cleanup backup file after upload failure: %v", cleanupErr)
+				}
+				logger.Errorf("Failed to upload backup for database %d to S3: %v", i+1, err)
+				failedBackups++
+				continue
 			}
-			return fmt.Errorf("failed to save backup to local storage: %w", err)
+			finalPath = s3Key
+		case *storage.LocalStorage:
+			localPath, err := sm.SaveBackup(backupPath, backupConfig.BackupPrefix, databaseName)
+			if err != nil {
+				// Cleanup local backup file on save failure
+				if cleanupErr := postgresBackup.CleanupBackup(backupPath); cleanupErr != nil {
+					logger.Warnf("Failed to cleanup backup file after save failure: %v", cleanupErr)
+				}
+				logger.Errorf("Failed to save backup for database %d to local storage: %v", i+1, err)
+				failedBackups++
+				continue
+			}
+			finalPath = localPath
+		default:
+			logger.Errorf("Unknown storage manager type for database %d", i+1)
+			failedBackups++
+			continue
 		}
-		finalPath = localPath
-	default:
-		return fmt.Errorf("unknown storage manager type")
+
+		// Cleanup local backup file
+		if err := postgresBackup.CleanupBackup(backupPath); err != nil {
+			logger.Warnf("Failed to cleanup local backup file for database %d: %v", i+1, err)
+		}
+
+		logger.Infof("Successfully backed up database %d to: %s", i+1, finalPath)
+		successfulBackups++
 	}
 
-	// Cleanup local backup file
-	if err := postgresBackup.CleanupBackup(backupPath); err != nil {
-		logger.Warnf("Failed to cleanup local backup file: %v", err)
-	}
-
-	// Cleanup old backups
+	// Cleanup old backups (only once, not per database)
+	logger.Info("Cleaning up old backups...")
 	switch sm := storageManager.(type) {
 	case *s3.S3Manager:
 		if err := sm.DeleteOldBackups(backupConfig.BackupPrefix, backupConfig.RetentionDays); err != nil {
@@ -204,6 +237,11 @@ func performBackup(postgresBackup *backup.PostgresBackup, storageManager interfa
 	}
 
 	duration := time.Since(startTime)
-	logger.Infof("Backup operation completed successfully in %v. Final path: %s", duration, finalPath)
+	logger.Infof("Backup operation completed in %v. Successful: %d, Failed: %d", duration, successfulBackups, failedBackups)
+
+	if failedBackups > 0 {
+		return fmt.Errorf("backup operation completed with %d failures out of %d databases", failedBackups, len(postgresBackups))
+	}
+
 	return nil
 }

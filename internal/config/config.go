@@ -8,11 +8,11 @@ import (
 
 // Config holds all configuration for the backup application
 type Config struct {
-	Database DatabaseConfig `json:"database"`
-	AWS      AWSConfig      `json:"aws"`
-	Local    LocalConfig    `json:"local"`
-	Backup   BackupConfig   `json:"backup"`
-	Logging  LoggingConfig  `json:"logging"`
+	Databases []DatabaseConfig `json:"databases"`
+	AWS       AWSConfig        `json:"aws"`
+	Local     LocalConfig      `json:"local"`
+	Backup    BackupConfig     `json:"backup"`
+	Logging   LoggingConfig    `json:"logging"`
 }
 
 // DatabaseConfig holds PostgreSQL connection configuration
@@ -81,6 +81,27 @@ func LoadConfig(configPath string) (*Config, error) {
 
 // Validate checks if the configuration is valid
 func (c *Config) Validate() error {
+	// Check if databases are configured
+	if len(c.Databases) == 0 {
+		return fmt.Errorf("at least one database must be configured")
+	}
+
+	// Validate each database configuration
+	for i, db := range c.Databases {
+		if db.Database == "" {
+			return fmt.Errorf("database name is required for database %d", i)
+		}
+		if db.Host == "" {
+			return fmt.Errorf("database host is required for database %d", i)
+		}
+		if db.Username == "" {
+			return fmt.Errorf("database username is required for database %d", i)
+		}
+		if db.Password == "" {
+			return fmt.Errorf("database password is required for database %d", i)
+		}
+	}
+
 	// Check if either local path or AWS S3 is configured
 	hasLocal := c.Local.Path != ""
 	hasAWS := c.AWS.Bucket != "" && c.AWS.Region != "" && c.AWS.AccessKeyID != "" && c.AWS.SecretAccessKey != ""

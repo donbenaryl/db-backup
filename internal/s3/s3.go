@@ -47,11 +47,11 @@ func NewS3Manager(awsConfig *config.AWSConfig, logger *logrus.Logger) (*S3Manage
 }
 
 // UploadBackup uploads a backup file to S3
-func (s *S3Manager) UploadBackup(localFilePath, backupPrefix string) (string, error) {
-	// Generate S3 key with timestamp
+func (s *S3Manager) UploadBackup(localFilePath, backupPrefix, databaseName string) (string, error) {
+	// Generate S3 key with database-specific path and timestamp
 	timestamp := time.Now().Format("2006-01-02_15-04-05")
 	filename := filepath.Base(localFilePath)
-	s3Key := fmt.Sprintf("%s/%s/%s", backupPrefix, timestamp[:10], filename)
+	s3Key := fmt.Sprintf("%s/%s/%s/%s", backupPrefix, databaseName, timestamp[:10], filename)
 
 	// Open the file
 	file, err := os.Open(localFilePath)
@@ -95,10 +95,10 @@ func (s *S3Manager) DeleteOldBackups(backupPrefix string, retentionDays int) err
 	err := s.s3.ListObjectsV2Pages(listInput, func(page *s3.ListObjectsV2Output, lastPage bool) bool {
 		for _, obj := range page.Contents {
 			// Parse the date from the S3 key
-			// Expected format: backup-prefix/YYYY-MM-DD/filename
+			// Expected format: backup-prefix/database-name/YYYY-MM-DD/filename
 			keyParts := strings.Split(*obj.Key, "/")
-			if len(keyParts) >= 2 {
-				dateStr := keyParts[1]
+			if len(keyParts) >= 3 {
+				dateStr := keyParts[2]
 				if objDate, err := time.Parse("2006-01-02", dateStr); err == nil {
 					if objDate.Before(cutoffDate) {
 						objectsToDelete = append(objectsToDelete, &s3.ObjectIdentifier{
