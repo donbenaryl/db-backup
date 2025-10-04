@@ -10,6 +10,8 @@ help:
 	@echo "  run-once       - Run backup once and exit"
 	@echo "  run-once-local - Run backup once with local storage"
 	@echo "  run-once-aws   - Run backup once with AWS S3"
+	@echo "  import         - Import backup to target database"
+	@echo "  import-local   - Import backup using local configuration"
 	@echo "  test           - Run basic tests"
 	@echo "  test-unit      - Run unit tests only"
 	@echo "  test-setup     - Setup test environment (Docker services)"
@@ -47,6 +49,14 @@ run-once-local:
 # Run backup once with AWS S3 storage
 run-once-aws:
 	go run ./cmd/main.go -config appsettings.aws.json -once
+
+# Import backup to target database
+import:
+	go run ./cmd/main.go -config appsettings.import.json -import
+
+# Import backup using local configuration
+import-local:
+	go run ./cmd/main.go -config appsettings.import.json -import
 
 # Run basic tests (skip integration tests that require Docker)
 test:

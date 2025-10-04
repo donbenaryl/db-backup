@@ -12,6 +12,7 @@ type Config struct {
 	AWS       AWSConfig        `json:"aws"`
 	Local     LocalConfig      `json:"local"`
 	Backup    BackupConfig     `json:"backup"`
+	Import    ImportConfig     `json:"import"`
 	Logging   LoggingConfig    `json:"logging"`
 }
 
@@ -43,6 +44,13 @@ type BackupConfig struct {
 	RetentionDays int    `json:"retention_days"`
 	Schedule      string `json:"schedule"`
 	BackupPrefix  string `json:"backup_prefix"`
+}
+
+// ImportConfig holds import/restore configuration
+type ImportConfig struct {
+	TargetDatabase DatabaseConfig `json:"target_database"`
+	BackupPath     string         `json:"backup_path"`
+	DropExisting   bool           `json:"drop_existing"`
 }
 
 // LoggingConfig holds logging configuration
@@ -79,8 +87,35 @@ func LoadConfig(configPath string) (*Config, error) {
 	return &config, nil
 }
 
+// LoadConfigForImport loads configuration from a JSON file for import operations
+func LoadConfigForImport(configPath string) (*Config, error) {
+	file, err := os.Open(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open config file: %w", err)
+	}
+	defer file.Close()
+
+	var config Config
+	decoder := json.NewDecoder(file)
+	if err := decoder.Decode(&config); err != nil {
+		return nil, fmt.Errorf("failed to decode config: %w", err)
+	}
+
+	// Validate configuration for import (allows empty databases)
+	if err := config.ValidateForImport(); err != nil {
+		return nil, fmt.Errorf("import configuration validation failed: %w", err)
+	}
+
+	return &config, nil
+}
+
 // Validate checks if the configuration is valid
 func (c *Config) Validate() error {
+	return c.ValidateForBackup()
+}
+
+// ValidateForBackup checks if the configuration is valid for backup operations
+func (c *Config) ValidateForBackup() error {
 	// Check if databases are configured
 	if len(c.Databases) == 0 {
 		return fmt.Errorf("at least one database must be configured")
@@ -120,6 +155,47 @@ func (c *Config) Validate() error {
 // IsLocalStorage returns true if local storage is configured
 func (c *Config) IsLocalStorage() bool {
 	return c.Local.Path != ""
+}
+
+// IsImportConfigured returns true if import configuration is valid
+func (c *Config) IsImportConfigured() bool {
+	return c.Import.BackupPath != "" &&
+		c.Import.TargetDatabase.Host != "" &&
+		c.Import.TargetDatabase.Database != "" &&
+		c.Import.TargetDatabase.Username != "" &&
+		c.Import.TargetDatabase.Password != ""
+}
+
+// ValidateImportConfig validates the import configuration
+func (c *Config) ValidateImportConfig() error {
+	if !c.IsImportConfigured() {
+		return fmt.Errorf("import configuration is incomplete - requires target_database and backup_path")
+	}
+
+	if c.Import.TargetDatabase.Host == "" {
+		return fmt.Errorf("import target database host is required")
+	}
+	if c.Import.TargetDatabase.Database == "" {
+		return fmt.Errorf("import target database name is required")
+	}
+	if c.Import.TargetDatabase.Username == "" {
+		return fmt.Errorf("import target database username is required")
+	}
+	if c.Import.TargetDatabase.Password == "" {
+		return fmt.Errorf("import target database password is required")
+	}
+	if c.Import.BackupPath == "" {
+		return fmt.Errorf("import backup path is required")
+	}
+
+	return nil
+}
+
+// ValidateForImport validates the configuration for import operations (allows empty databases)
+func (c *Config) ValidateForImport() error {
+	// For import operations, we only need to validate the import configuration
+	// Databases array can be empty since we're not backing up anything
+	return c.ValidateImportConfig()
 }
 
 // IsAWSStorage returns true if AWS S3 is configured

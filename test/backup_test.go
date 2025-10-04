@@ -2,6 +2,7 @@ package test
 
 import (
 	"bytes"
+	"database/sql"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"db-backuper/internal/config"
+	"db-backuper/internal/restore"
 	"db-backuper/internal/s3"
 	"db-backuper/internal/storage"
 
@@ -19,6 +21,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	awss3 "github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
+	_ "github.com/lib/pq"
 	"github.com/sirupsen/logrus"
 )
 
@@ -26,6 +29,7 @@ var (
 	testConfig       *config.Config
 	testS3Manager    *s3.S3Manager
 	testLocalStorage *storage.LocalStorage
+	testLogger       *logrus.Logger
 )
 
 // TestMain sets up and tears down the test environment
@@ -66,6 +70,10 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		logrus.Fatalf("Failed to create local storage: %v", err)
 	}
+
+	// Setup test logger
+	testLogger = logrus.New()
+	testLogger.SetLevel(logrus.DebugLevel)
 
 	// Run tests
 	code := m.Run()
@@ -560,4 +568,209 @@ func verifyBackupContent(t *testing.T, backupPath string) {
 	}
 
 	t.Logf("Backup content verification passed for %s", backupPath)
+}
+
+// TestRestoreFunctionality tests the restore/import functionality
+func TestRestoreFunctionality(t *testing.T) {
+	if os.Getenv("RUN_INTEGRATION_TESTS") != "true" {
+		t.Skip("Skipping integration test: RUN_INTEGRATION_TESTS not set to true")
+	}
+
+	// Test local restore
+	t.Run("LocalRestore", func(t *testing.T) {
+		testLocalRestore(t)
+	})
+
+	// Test restore with data verification
+	t.Run("RestoreWithVerification", func(t *testing.T) {
+		testRestoreWithVerification(t)
+	})
+}
+
+// testLocalRestore tests local restore functionality
+func testLocalRestore(t *testing.T) {
+	// Create a test backup file
+	testBackupContent := createTestBackupContent()
+	tempBackupFile := "/tmp/test_restore_backup.sql"
+
+	if err := os.WriteFile(tempBackupFile, []byte(testBackupContent), 0644); err != nil {
+		t.Fatalf("Failed to create test backup file: %v", err)
+	}
+	defer os.Remove(tempBackupFile)
+
+	// Create import configuration
+	importConfig := &config.ImportConfig{
+		TargetDatabase: config.DatabaseConfig{
+			Host:     "localhost",
+			Port:     5433,
+			Username: "testuser",
+			Password: "testpass",
+			Database: "testdb_restored",
+			SSLMode:  "disable",
+		},
+		BackupPath:   tempBackupFile,
+		DropExisting: true,
+	}
+
+	// Create restore instance
+	postgresRestore := restore.NewPostgresImport(importConfig, testLogger)
+
+	// Test the restore
+	if err := postgresRestore.ImportBackup(); err != nil {
+		t.Fatalf("Restore failed: %v", err)
+	}
+
+	t.Log("Local restore test completed successfully")
+}
+
+// testRestoreWithVerification tests restore and verifies the data
+func testRestoreWithVerification(t *testing.T) {
+	// Create a test backup file
+	testBackupContent := createTestBackupContent()
+	tempBackupFile := "/tmp/test_restore_verify_backup.sql"
+
+	if err := os.WriteFile(tempBackupFile, []byte(testBackupContent), 0644); err != nil {
+		t.Fatalf("Failed to create test backup file: %v", err)
+	}
+	defer os.Remove(tempBackupFile)
+
+	// Create import configuration
+	importConfig := &config.ImportConfig{
+		TargetDatabase: config.DatabaseConfig{
+			Host:     "localhost",
+			Port:     5434,
+			Username: "testuser",
+			Password: "testpass",
+			Database: "testdb_restored_verify",
+			SSLMode:  "disable",
+		},
+		BackupPath:   tempBackupFile,
+		DropExisting: true,
+	}
+
+	// Create restore instance
+	postgresRestore := restore.NewPostgresImport(importConfig, testLogger)
+
+	// Test the restore
+	if err := postgresRestore.ImportBackup(); err != nil {
+		t.Fatalf("Restore failed: %v", err)
+	}
+
+	// Verify the restored data
+	if err := verifyRestoredData(t, importConfig.TargetDatabase); err != nil {
+		t.Fatalf("Data verification failed: %v", err)
+	}
+
+	t.Log("Restore with verification test completed successfully")
+}
+
+// createTestBackupContent creates a test backup file content
+func createTestBackupContent() string {
+	return `-- PostgreSQL database dump
+-- Dumped from database version 15.0
+-- Dumped by pg_dump version 15.0
+
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+SET idle_in_transaction_session_timeout = 0;
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
+SET check_function_bodies = false;
+SET xmloption = content;
+SET client_min_messages = warning;
+SET row_security = off;
+
+CREATE TABLE users (
+    id integer NOT NULL,
+    username character varying(50) NOT NULL,
+    email character varying(100) NOT NULL,
+    first_name character varying(50) NOT NULL,
+    last_name character varying(50) NOT NULL,
+    age integer,
+    phone character varying(20),
+    address text,
+    is_active boolean DEFAULT true,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO users VALUES (1, 'john_doe', 'john.doe@example.com', 'John', 'Doe', 28, '+1-555-0101', '123 Main St, New York, NY 10001', true, '2024-01-01 10:00:00', '2024-01-01 10:00:00');
+INSERT INTO users VALUES (2, 'jane_smith', 'jane.smith@example.com', 'Jane', 'Smith', 32, '+1-555-0102', '456 Oak Ave, Los Angeles, CA 90210', true, '2024-01-01 10:01:00', '2024-01-01 10:01:00');
+INSERT INTO users VALUES (3, 'bob_johnson', 'bob.johnson@example.com', 'Bob', 'Johnson', 45, '+1-555-0103', '789 Pine Rd, Chicago, IL 60601', true, '2024-01-01 10:02:00', '2024-01-01 10:02:00');
+
+CREATE TABLE test_products (
+    id integer NOT NULL,
+    name character varying(100) NOT NULL,
+    price numeric(10,2) NOT NULL,
+    description text,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO test_products VALUES (1, 'Laptop', 999.99, 'High-performance laptop', '2024-01-01 10:00:00');
+INSERT INTO test_products VALUES (2, 'Mouse', 29.99, 'Wireless mouse', '2024-01-01 10:01:00');
+INSERT INTO test_products VALUES (3, 'Keyboard', 79.99, 'Mechanical keyboard', '2024-01-01 10:02:00');
+
+-- Data for Name: users; Type: TABLE DATA; Schema: public; Owner: testuser
+-- Data for Name: test_products; Type: TABLE DATA; Schema: public; Owner: testuser
+
+-- PostgreSQL database dump complete
+`
+}
+
+// verifyRestoredData verifies that the restored data is correct
+func verifyRestoredData(t *testing.T, dbConfig config.DatabaseConfig) error {
+	// Connect to the restored database
+	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		dbConfig.Host, dbConfig.Port, dbConfig.Username, dbConfig.Password, dbConfig.Database, dbConfig.SSLMode)
+
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		return fmt.Errorf("failed to connect to restored database: %w", err)
+	}
+	defer db.Close()
+
+	// Test connection
+	if err := db.Ping(); err != nil {
+		return fmt.Errorf("failed to ping restored database: %w", err)
+	}
+
+	// Verify users table exists and has data
+	var userCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM users").Scan(&userCount); err != nil {
+		return fmt.Errorf("failed to count users: %w", err)
+	}
+	if userCount < 3 {
+		return fmt.Errorf("expected at least 3 users, got %d", userCount)
+	}
+
+	// Verify specific user data
+	var username string
+	if err := db.QueryRow("SELECT username FROM users WHERE email = 'john.doe@example.com'").Scan(&username); err != nil {
+		return fmt.Errorf("failed to find john.doe@example.com: %w", err)
+	}
+	if username != "john_doe" {
+		return fmt.Errorf("expected username 'john_doe', got '%s'", username)
+	}
+
+	// Verify products table exists and has data
+	var productCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM test_products").Scan(&productCount); err != nil {
+		return fmt.Errorf("failed to count products: %w", err)
+	}
+	if productCount < 3 {
+		return fmt.Errorf("expected at least 3 products, got %d", productCount)
+	}
+
+	// Verify specific product data
+	var productName string
+	var price float64
+	if err := db.QueryRow("SELECT name, price FROM test_products WHERE name = 'Laptop'").Scan(&productName, &price); err != nil {
+		return fmt.Errorf("failed to find Laptop product: %w", err)
+	}
+	if productName != "Laptop" || price != 999.99 {
+		return fmt.Errorf("expected Laptop with price 999.99, got %s with price %f", productName, price)
+	}
+
+	t.Logf("Data verification successful: %d users, %d products", userCount, productCount)
+	return nil
 }

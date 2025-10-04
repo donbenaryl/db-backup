@@ -12,6 +12,7 @@ import (
 
 	"db-backuper/internal/backup"
 	"db-backuper/internal/config"
+	"db-backuper/internal/restore"
 	"db-backuper/internal/s3"
 	"db-backuper/internal/storage"
 
@@ -23,18 +24,45 @@ func main() {
 	// Parse command line flags
 	configPath := flag.String("config", "appsettings.json", "Path to configuration file")
 	runOnce := flag.Bool("once", false, "Run backup once and exit")
+	importBackup := flag.Bool("import", false, "Import backup to target database and exit")
 	flag.Parse()
 
-	// Load configuration
-	cfg, err := config.LoadConfig(*configPath)
-	if err != nil {
-		fmt.Printf("Failed to load configuration: %v\n", err)
-		os.Exit(1)
+	// Setup logger first (we need it for error messages)
+	logger := logrus.New()
+	logger.SetLevel(logrus.InfoLevel)
+
+	// Load configuration based on operation type
+	var cfg *config.Config
+	var err error
+
+	if *importBackup {
+		// For import operations, use special loading that allows empty databases
+		cfg, err = config.LoadConfigForImport(*configPath)
+		if err != nil {
+			logger.Fatalf("Failed to load import configuration: %v", err)
+		}
+		logger.Info("Starting PostgreSQL import service")
+	} else {
+		// For backup operations, use standard loading
+		cfg, err = config.LoadConfig(*configPath)
+		if err != nil {
+			logger.Fatalf("Failed to load configuration: %v", err)
+		}
+		logger.Info("Starting PostgreSQL backup service")
 	}
 
-	// Setup logger
-	logger := setupLogger(cfg.Logging)
-	logger.Info("Starting PostgreSQL backup service")
+	// Setup logger with configuration
+	logger = setupLogger(cfg.Logging)
+
+	// Handle import operation
+	if *importBackup {
+		postgresImport := restore.NewPostgresImport(&cfg.Import, logger)
+		if err := postgresImport.ImportBackup(); err != nil {
+			logger.Fatalf("Import failed: %v", err)
+		}
+		logger.Info("Import completed successfully")
+		return
+	}
 
 	// Initialize backup components
 	postgresBackups := make([]*backup.PostgresBackup, len(cfg.Databases))
