@@ -146,14 +146,16 @@ func (pi *PostgresImport) importBackupFile() error {
 	env := os.Environ()
 	env = append(env, fmt.Sprintf("PGPASSWORD=%s", pi.config.TargetDatabase.Password))
 
-	// Build command
-	cmd := exec.Command("psql", dsn, "-f", pi.config.BackupPath)
-	cmd.Env = env
-
 	// Set working directory to the backup file's directory
-	cmd.Dir = filepath.Dir(pi.config.BackupPath)
+	backupDir := filepath.Dir(pi.config.BackupPath)
+	backupFile := filepath.Base(pi.config.BackupPath)
 
-	pi.logger.Infof("Executing import command: psql %s -f %s", dsn, pi.config.BackupPath)
+	// Build command with just the filename since we're setting the working directory
+	cmd := exec.Command("psql", dsn, "-f", backupFile)
+	cmd.Env = env
+	cmd.Dir = backupDir
+
+	pi.logger.Infof("Executing import command: psql %s -f %s (working dir: %s)", dsn, backupFile, backupDir)
 
 	// Run the command
 	output, err := cmd.CombinedOutput()
